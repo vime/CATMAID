@@ -2510,7 +2510,7 @@
           transparent: true
         });
       }
-      this.zplane = new THREE.Mesh(geometry, new THREE.MultiMaterial(this.zplaneMaterials));
+      this.zplane = new THREE.Mesh(geometry, this.zplaneMaterials);
     } else {
       var material = new THREE.MeshBasicMaterial({
         color: 0x151349, side: THREE.DoubleSide, opacity: opacity, transparent: true});
