@@ -800,7 +800,8 @@
     this.smooth_skeletons_sigma = 200; // nm
     this.resample_skeletons = false;
     this.resampling_delta = 3000; // nm
-    this.skeleton_line_width = 3;
+    this.skeleton_line_width = 300;
+    this.skeleton_line_attenuation = false;
     this.skeleton_node_scaling = 1.0;
     this.invert_shading = false;
     this.follow_active = false;
@@ -4082,7 +4083,9 @@
     }
     this.actorColor = this.skeletonmodel.color.clone();
     var CTYPES = this.CTYPES;
-    this.line_material = new THREE.LineBasicMaterial({color: 0xffff00, opacity: 1.0, linewidth: options.skeleton_line_width});
+    this.line_material = new THREE.MeshBasicMaterial({color: 0xffff00, opacity: 1.0,
+        meshLine: true, meshLineWidth: options.skeleton_line_width,
+        meshLineSizeAttenuation: options.skeleton_line_attenuation});
 
     // Connector links
     this.geometry = {};
@@ -4092,7 +4095,7 @@
     this.geometry[CTYPES[3]] = new THREE.Geometry();
 
     this.actor = {}; // has three keys (the CTYPES), each key contains the edges of each type
-    this.actor[CTYPES[0]] = new THREE.LineSegments(this.geometry[CTYPES[0]], this.line_material);
+    this.actor[CTYPES[0]] = new THREE.MeshLine(this.geometry[CTYPES[0]], this.line_material);
     this.actor[CTYPES[1]] = new THREE.LineSegments(this.geometry[CTYPES[1]], this.space.staticContent.connectorLineColors[CTYPES[1]]);
     this.actor[CTYPES[2]] = new THREE.LineSegments(this.geometry[CTYPES[2]], this.space.staticContent.connectorLineColors[CTYPES[2]]);
     this.actor[CTYPES[3]] = new THREE.LineSegments(this.geometry[CTYPES[3]], this.space.staticContent.connectorLineColors[CTYPES[3]]);
@@ -4524,7 +4527,6 @@
 
     } else {
       // Display the entire skeleton with a single color.
-      this.geometry['neurite'].colors = [];
       this.line_material.vertexColors = THREE.NoColors;
       this.line_material.needsUpdate = true;
 
@@ -4532,6 +4534,10 @@
       this.actor['neurite'].material.opacity = this.opacity;
       this.actor['neurite'].material.transparent = this.opacity !== 1;
       this.actor['neurite'].material.needsUpdate = true; // TODO repeated it's the line_material
+
+      // The neurite mesh is a buffer geometry and we have to update its color
+      // buffer.
+
 
       var material = new colorizer.SkeletonMaterial({
         color: this.actorColor,
@@ -4550,7 +4556,12 @@
   };
 
   WebGLApplication.prototype.Space.prototype.Skeleton.prototype.changeSkeletonLineWidth = function(width) {
-      this.actor['neurite'].material.linewidth = width;
+      this.actor['neurite'].material.meshLineWidth = width;
+      this.actor['neurite'].material.needsUpdate = true;
+  };
+
+  WebGLApplication.prototype.Space.prototype.Skeleton.prototype.changeSkeletonLineAttenuation = function(enabled) {
+      this.actor['neurite'].material.meshLineSizeAttenuation = enabled;
       this.actor['neurite'].material.needsUpdate = true;
   };
 
@@ -4969,8 +4980,19 @@
       // Only add geometry to the scene that has at least one vertex. Not every
       // CTYPE actor is actually used, so this case can happen. Adding empty
       // geometry causes renderer warnings, which we want to avoid.
-      if (actor && actor.geometry.vertices.length > 0) {
-        this.space.add(this.actor[t]);
+      if (actor) {
+        var geometry = actor.geometry;
+        if (geometry instanceof THREE.BufferGeometry) {
+          if (geometry.attributes.position.count > 0) {
+            this.space.add(actor);
+          }
+        } else if (geometry.vertices) {
+          if (geometry.vertices.length > 0) {
+            this.space.add(actor);
+          }
+        } else {
+          throw new CATMAID.ValueError('Unknown actor configuration: ' + t);
+        }
       }
     }, this);
   };
@@ -5635,11 +5657,8 @@
           options.neuron_material);
     }
 
-    if (options.resample_skeletons) {
-      if (options.smooth_skeletons) {
-        // Can't both smooth and resample
-        return;
-      }
+    // Can't both smooth and resample
+    if (options.resample_skeletons && !options.smooth_skeletons) {
       // WARNING: node IDs no longer resemble actual skeleton IDs.
       // All node IDs will now have negative values to avoid accidental similarities.
       var arbor = this.createArbor();
@@ -5666,6 +5685,14 @@
         v_root.node_id = -res.arbor.root;
       }
     }
+
+    // Update mesh line
+    var colors = new Array(this.geometry['neurite'].vertices.length);
+    for (var i=0, max=colors.length; i<max; ++i) {
+      colors[i] = 1;
+    }
+    this.geometry['neurite'].colors = colors;
+    this.actor['neurite'] = new THREE.MeshLine(this.geometry['neurite'], this.line_material);
   };
 
   /**
@@ -5931,6 +5958,13 @@
     this.options.skeleton_line_width = value;
     var sks = this.space.content.skeletons;
     Object.keys(sks).forEach(function(skid) { sks[skid].changeSkeletonLineWidth(value); });
+    this.space.render();
+  };
+
+  WebGLApplication.prototype.updateSkeletonLineAttenuation = function(enabled) {
+    this.options.skeleton_line_attenuation = enabled;
+    var sks = this.space.content.skeletons;
+    Object.keys(sks).forEach(function(skid) { sks[skid].changeSkeletonLineAttenuation(enabled); });
     this.space.render();
   };
 

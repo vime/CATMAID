@@ -587,6 +587,15 @@ var WindowMaker = new function()
           ['Line width', o.skeleton_line_width, null, function() { WA.updateSkeletonLineWidth(this.value); }, 4],
           {
             type: 'checkbox',
+            label: 'Line attenuation',
+            value: o.skeleton_line_attenuation,
+            onclick: function() {
+              WA.updateSkeletonLineAttenuation(this.checked);
+            },
+            title: 'If checked, more distant lines are thinner'
+          },
+          {
+            type: 'checkbox',
             label: 'Flat neuron material',
             value: o.neuron_material === 'basic',
             onclick: function() {

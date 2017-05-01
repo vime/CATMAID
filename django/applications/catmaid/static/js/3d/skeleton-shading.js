@@ -9,6 +9,7 @@
    * Create a new shader based material to have active node focused shading.
    */
   var makeNearActiveNodeSplitMaterial = function(baseMaterial, cameraSpace, activeNodeDistance) {
+    // TODO: make MeshLine compatible
     var material = new CATMAID.ShaderLineBasicMaterial(baseMaterial);
 
     // Determine active node distance in the vertex shader and pass to the
@@ -615,10 +616,12 @@
         if (isFn(shading.material)) {
           return shading.material(skeleton, options);
         } else {
-          return new THREE.LineBasicMaterial({
+          return new THREE.MeshBasicMaterial({
             color: skeleton.line_material.color,
             opacity: skeleton.line_material.opacity,
-            linewidth: options.skeleton_line_width
+            meshLine: true,
+            meshLineWidth: options.skeleton_line_width,
+            meshLineSizeAttenuation: options.skeleton_line_attenuation
           });
         }
       },
