@@ -1899,6 +1899,7 @@
     this.view.camera.updateProjectionMatrix();
     this.pickingTexture.setSize(canvasWidth, canvasHeight);
     this.view.renderer.setSize(canvasWidth, canvasHeight);
+    this.staticContent.setSize(canvasWidth, canvasHeight);
     if (this.view.controls) {
       this.view.controls.handleResize();
     }
@@ -1931,7 +1932,9 @@
 
   WebGLApplication.prototype.Space.prototype.render = function() {
     if (this.view) {
-      this.view.render();
+      var beforeRender = this.staticContent.beforeRender.bind(
+          this.staticContent);
+      this.view.render(beforeRender);
     }
   };
 
@@ -1953,7 +1956,7 @@
     // remove meshes
     if (this.staticContent.box) this.scene.remove(this.staticContent.box);
     this.scene.remove(this.staticContent.floor);
-    if (this.staticContent.zplane) this.scene.remove(this.staticContent.zplane);
+    if (this.staticContent.zplanes) this.scene.remove.apply(this.scene, this.staticContent.zplanes);
     this.staticContent.missing_sections.forEach(function(m) { this.remove(m); }, this.scene);
 
     this.view.destroy();
@@ -2132,6 +2135,8 @@
     });
 
     this.zplane = null;
+    this.zplanes = null;
+    this.zplaneScene = new THREE.Scene();
 
     this.missing_sections = [];
 
@@ -2168,13 +2173,7 @@
       s.geometry.dispose();
       s.material.dispose(); // it is ok to call more than once
     });
-    if (this.zplane) {
-      this.zplane.geometry.dispose();
-      // Dispose individual zplane tiles in texture mode.
-      this.zplane.material.materials.forEach(function(m) {
-        m.dispose();
-      });
-    }
+    this.disposeZplane();
 
     // dispose shared geometries
     [this.labelspheregeometry, this.radiusSphere, this.icoSphere, this.cylinder].forEach(function(g) {
@@ -2192,6 +2191,48 @@
     this.synapticColors[2].dispose();
     this.synapticColors.default.dispose();
   };
+
+  /**
+   * Dispose a material instasnce and a bound texture if it has one.
+   */
+  var disposeMaterial = function(m) {
+    if (m.map) {
+      m.map.dispose();
+    }
+    m.dispose();
+  };
+
+  WebGLApplication.prototype.Space.prototype.StaticContent.prototype.disposeZplane = function(space) {
+    if (this.zplane) {
+      this.zplane.geometry.dispose();
+      this.zplane.material.dispose();
+
+      if (space) {
+        space.scene.remove(this.zplane);
+      }
+    }
+    if (this.zplanes) {
+      for (var i=0; i<this.zplanes.length; ++i) {
+        this.zplanes[i].geometry.dispose();
+        // Dispose individual zplane tiles in texture mode.
+        this.zplanes[i].material.materials.forEach(disposeMaterial);
+      }
+
+      if (this.zplaneScene) {
+        this.zplaneScene.remove.apply(this.zplaneScene, this.zplanes);
+      }
+    }
+
+    if (this.zplaneRenderTarget) {
+      this.zplaneRenderTarget.dispose();
+    }
+
+    this.zplane = null;
+    this.zplanes = null;
+    this.zplaneLayers = null;
+    this.zplaneRenderTarget = null;
+  };
+
 
   /**
    * Update shared materials that can be updated during run-time.
@@ -2401,18 +2442,11 @@
     }
 
     if (options.show_zplane) {
-      // Try to get active mirror from active tile layer
-      var mirrorIndex = 0;
-      var tileLayer = project.focusedStackViewer.getLayers().get('TileLayer');
-      if (tileLayer) {
-        mirrorIndex = parseInt(tileLayer.mirrorIndex, 10);
-      }
       this.createZPlane(space, project.focusedStackViewer,
           options.zplane_texture ? options.zplane_zoomlevel : null,
-          mirrorIndex, options.zplane_opacity);
+          options.zplane_opacity);
     } else {
-      if (this.zplane) space.scene.remove(this.zplane);
-      this.zplane = null;
+      this.disposeZplane(space);
     }
   };
 
@@ -2582,44 +2616,86 @@
    *                                   image tile texture. If set to "max", the
    *                                   stack's maximum zoom level is used. If
    *                                   null/undefined, no texture will be used.
-   * @param {Number}  textureMirrorIdx Mirror index to use for textures.
    * @param {Number}  opacity          A value in the range 0-1 representing the
    *                                   opacity of the z plane.
    */
   WebGLApplication.prototype.Space.prototype.StaticContent.prototype.createZPlane =
-      function(space, stackViewer, textureZoomLevel, textureMirrorIdx, opacity) {
-    if (this.zplane) space.scene.remove(this.zplane);
+      function(space, stackViewer, textureZoomLevel, opacity) {
+    this.disposeZplane(space);
 
-    if ("max" === textureZoomLevel) {
-      textureZoomLevel = stackViewer.primaryStack.MAX_S;
-    }
-    var mirrorIndex = CATMAID.tools.getDefined(textureMirrorIdx, 0);
-    this.zplaneTileSource = stackViewer.primaryStack.createTileSourceForMirror(mirrorIndex);
-    // Create geometry for plane
-    var geometry = this.createPlaneGeometry(stackViewer.primaryStack, this.zplaneTileSource, textureZoomLevel);
+    // Create geometry for plane based on primary stack
+    var geometry = this.createPlaneGeometry(stackViewer.primaryStack);
+    var material = new THREE.MeshBasicMaterial({
+        color: 0x151349, side: THREE.DoubleSide, opacity: opacity,
+        transparent: true});
+    this.zplane = new THREE.Mesh(geometry, material);
+    space.scene.add(this.zplane);
 
     if (textureZoomLevel || 0 === textureZoomLevel) {
-      // Remember zoom level for updates
-      this.zplaneZoomLevel = textureZoomLevel;
-      // Every tile in the z plane is made out of two triangles.
-      this.zplaneMaterials = new Array(geometry.faces.length / 2);
-      for (var i=0; i<this.zplaneMaterials.length; ++i) {
-        this.zplaneMaterials[i] = new THREE.MeshBasicMaterial({
-          color: 0xffffff,
-          side: THREE.DoubleSide,
-          opacity: opacity,
-          transparent: true
+      this.zplanes = [];
+      this.zplaneLayers = [];
+      // Each layer ha its own mesh, which makes it easier to position
+      // layers relative to each other and provides support for blending.
+      var tileLayers = stackViewer.getLayersOfType(CATMAID.TileLayer);
+
+      var offsetMap = new Map();
+
+      for (var l=0; l<tileLayers.length; ++l) {
+        var tileLayer = tileLayers[l];
+        // Only show visible tile layers
+        if (!tileLayer.visible) {
+          continue;
+        }
+
+        var stack = tileLayer.stack;
+
+        // Init or update depth offset map. This is is used instead of polygon
+        // offset, because it is easier to get right with log depth buffers.
+        var offset = offsetMap.get(stack.orientation);
+        if (offset === undefined) {
+          offset = 0;
+        } else {
+          offset += 0;
+        }
+        offsetMap.set(stack.orientation, offset);
+
+        var zoomLevel = "max" === textureZoomLevel ? tileLayer.stack.MAX_S :
+            Math.min(tileLayer.stack.MAX_S, textureZoomLevel);
+        var tileSource = tileLayer.stack.createTileSourceForMirror(tileLayer.mirrorIndex);
+        var geometry = this.createPlaneGeometry(tileLayer.stack, tileSource, zoomLevel);
+
+        // Every tile in the z plane is made out of two triangles.
+        var zplaneMaterials = new Array(geometry.faces.length / 2);
+        var usePolygonOffset = l > 0;
+        var factor = l > 0 ? 1 : -1;
+        for (var i=0; i<zplaneMaterials.length; ++i) {
+          zplaneMaterials[i] = new THREE.MeshBasicMaterial({
+            color: 0xffffff,
+            side: THREE.DoubleSide,
+            opacity: opacity,
+            transparent: true,
+            polygonOffset: usePolygonOffset,
+            polygonOffsetFactor: -0.0000001,
+            polygonOffsetUnits: 0.001
+          });
+        }
+
+        var mesh = new THREE.Mesh(geometry, new THREE.MultiMaterial(zplaneMaterials));
+        this.zplanes.push(mesh);
+        this.zplaneLayers.push({
+          hasImages: true,
+          mesh: mesh,
+          blendMode: THREE.NormalBlending,
+          tileSource: tileSource,
+          materials: zplaneMaterials,
+          zoomLevel: zoomLevel,
+          stack: tileLayer.stack,
+          offset: offset
         });
       }
-      this.zplane = new THREE.Mesh(geometry, new THREE.MultiMaterial(this.zplaneMaterials));
-    } else {
-      var material = new THREE.MeshBasicMaterial({
-        color: 0x151349, side: THREE.DoubleSide, opacity: opacity, transparent: true});
-      this.zplane = new THREE.Mesh(geometry, material);
-      this.zplaneMaterials = null;
-    }
 
-    space.scene.add(this.zplane);
+      this.zplaneScene.add.apply(this.zplaneScene, this.zplanes);
+    }
 
     this.updateZPlanePosition(space, stackViewer);
   };
@@ -2636,39 +2712,86 @@
     this.__notify();
   };
 
+  var setDepth = function(target, stack, source, offset) {
+    offset = offset === undefined ? 0 : offset;
+    switch (stack.orientation) {
+      case CATMAID.Stack.ORIENTATION_XY:
+        target.z = stack.stackToProjectZ(source.z, source.y, source.x) + offset;
+        break;
+      case CATMAID.Stack.ORIENTATION_XZ:
+        target.y = stack.stackToProjectY(source.z, source.y, source.x) + offset;
+        break;
+      case CATMAID.Stack.ORIENTATION_ZY:
+        target.x = stack.stackToProjectX(source.z, source.y, source.x) + offset;
+        break;
+    }
+    return target;
+  };
+
   WebGLApplication.prototype.Space.prototype.StaticContent.prototype.updateZPlanePosition = function(space, stackViewer) {
-    if (this.zplane) {
-      var stack = stackViewer.primaryStack;
-      var v = new THREE.Vector3(0, 0, 0);
-      switch (stackViewer.primaryStack.orientation) {
-        case CATMAID.Stack.ORIENTATION_XY:
-          v.z = stack.stackToProjectZ(stackViewer.z, stackViewer.y, stackViewer.x);
-          break;
-        case CATMAID.Stack.ORIENTATION_XZ:
-          v.y = stack.stackToProjectY(stackViewer.z, stackViewer.y, stackViewer.x);
-          break;
-        case CATMAID.Stack.ORIENTATION_ZY:
-          v.x = stack.stackToProjectX(stackViewer.z, stackViewer.y, stackViewer.x);
-          break;
+    var self = this;
+    var zplane = this.zplane;
+    if (!zplane) {
+      return;
+    }
+    var stack = stackViewer.stack;
+
+    // Find current reference stack position, add current depth offset and set
+    // location of current layer.
+    var pos = new THREE.Vector3(0, 0, 0);
+    setDepth(pos, stackViewer.primaryStack, stackViewer);
+    zplane.position.copy(pos);
+
+    if (!this.zplanes) {
+      return;
+    }
+
+    // Wait for all images to render (if any), from all layers. This is not used
+    // for non-image z planes.
+    self.zplaneTileCounter = 0;
+    self.zplaneTileLoadErrors = [];
+    for (var i=0; i<this.zplaneLayers.length; ++i) {
+      var materials = this.zplaneLayers[i].materials;
+      if (materials) {
+        self.zplaneTileCounter += materials.length;
       }
-      this.zplane.position.copy(v);
+    }
+    var notify = function() {
+      self.zplaneTileCounter--;
+      if (0 === self.zplaneTileCounter) {
+        zplane.material.uniforms['zplane'].needsUpdate = true;
+        space.render();
+      }
+    };
+    var handleError = function(error) {
+      self.zplaneTileCounter--;
+      self.zplaneTileLoadErrors.push(error);
+      if (self.zplaneTileLoadErrors === 0) {
+        CATMAID.warn('Couldn\'t load ' + loadErrors.length + ' tile(s)');
+      }
+    };
 
-      // Also update tile texture
-      if (this.zplaneMaterials) {
-        var tileSource = this.zplaneTileSource;
+    for (var i=0; i<this.zplaneLayers.length; ++i) {
+      var layer = this.zplaneLayers[i];
+      var stack = layer.stack;
 
-        var counter = this.zplaneMaterials.length;
-        var notify = function() {
-          counter = counter - 1;
-          if (0 === counter) {
-            space.render();
-          }
-        };
+      // Find current reference stack position, add current depth offset and set
+      // location of current layer.
+      var pos = new THREE.Vector3(0, 0, 0);
+      setDepth(pos, stack, stackViewer, layer.offset);
+      layer.mesh.position.copy(pos);
 
-        var zoomLevel = this.zplaneZoomLevel;
-        var nCols = getNZoomedParts(stack.dimension.x, zoomLevel, tileSource.tileWidth);
-        for (var i=0; i<this.zplaneMaterials.length; ++i) {
-          var material = this.zplaneMaterials[i];
+      // Also update tile textures, if enabled
+      if (layer.hasImages) {
+        // Create materials and textures
+        var tileSource = layer.tileSource;
+        var zoomLevel = layer.zoomLevel;
+        var layerStack = layer.stack;
+        var nCols = getNZoomedParts(layerStack.dimension.x, zoomLevel,
+            tileSource.tileWidth);
+        var materials = layer.materials;
+        for (var m=0; m<materials.length; ++m) {
+          var material = materials[m];
           var texture = material.map;
           var image;
           if (texture) {
@@ -2682,6 +2805,7 @@
             image.crossOrigin = true;
             texture = new THREE.Texture(image);
             image.onload = loadTile;
+            image.onerror = handleError;
             material.map = texture;
           }
           // Add some state information to image element to avoid creating a
@@ -2689,14 +2813,87 @@
           image.__material = material;
           image.__notify = notify;
 
+          // Layers further up, will replace pixels from layers further down,
+          // they are (currently) not combined.
+          material.blending = THREE.CustomBlending;
+          material.blendEquation = THREE.AddEquation;
+          material.blendSrc = THREE.SrcAlphaFactor;
+          material.blendDst = THREE.OneMinusSrcAlphaFactor;
+          material.depthTest = false;
+
           var slicePixelPosition = [stackViewer.z];
-          var col = i % nCols;
-          var row = (i - col) / nCols;
-          image.src = tileSource.getTileURL(project.id, stack,
+          var col = m % nCols;
+          var row = (m - col) / nCols;
+          image.src = tileSource.getTileURL(project.id, layerStack,
               slicePixelPosition, col, row, zoomLevel);
         }
+        layer.mesh.material.needsUpdate = true;
+      }
+    }
+  };
 
-        this.zplane.material.needsUpdate = true;
+  WebGLApplication.prototype.Space.prototype.StaticContent.prototype.beforeRender = function(scene, renderer, camera) {
+    // If z sections are displayed and show tile layer images, then the current
+    // view has to be rendered first and provided as a texture for the main
+    // scene z section.
+    if (this.zplane && this.zplanes) {
+      // Make sure we have a render target
+      if (!this.zplaneRenderTarget) {
+        var size = renderer.getSize();
+        this.zplaneRenderTarget = new THREE.WebGLRenderTarget(size.width, size.height, {
+            minFilter: THREE.NearestFilter,
+            magFilter: THREE.NearestFilter
+        });
+        var material = new CATMAID.ShaderMeshBasicMaterial();
+        material.addUniforms({
+          displayScale: { value: renderer.getPixelRatio() },
+          zplane: { value: this.zplaneRenderTarget.texture },
+          width: { value: size.width },
+          height: { value: size.height }
+        });
+        material.insertSnippet('fragmentDeclarations', [
+          'uniform float displayScale;',
+          'uniform float width;',
+          'uniform float height;',
+          'uniform sampler2D zplane;',
+          ''
+        ].join('\n'));
+        material.insertSnippet('fragmentColor', [
+          'float texWidth = width * displayScale;',
+          'float texHeight = height * displayScale;',
+          'vec2 texCoord = vec2((gl_FragCoord.x - 0.5) / texWidth, (gl_FragCoord.y - 0.5) / texHeight);',
+          'vec4 diffuseColor = texture2D(zplane, texCoord);'
+        ].join('\n'));
+        material.side = THREE.DoubleSide;
+        material.transparent = true;
+        this.zplane.material = material;
+      }
+      // Render all zplane layers
+      renderer.render(this.zplaneScene, camera, this.zplaneRenderTarget, true);
+      renderer.setRenderTarget(null);
+
+      // If wanted, the picking map can be exported
+      var saveZplaneImage = false;
+      if (saveZplaneImage) {
+        var img = CATMAID.tools.createImageFromGlContext(renderer.getContext(),
+            this.zplaneRenderTarget.width, this.zplaneRenderTarget.height);
+        var blob = CATMAID.tools.dataURItoBlob(img.src);
+        saveAs(blob, "catmaid-zplanemap.png");
+      }
+
+      // Wait for images with update
+      this.zplane.material.needsUpdate = false;
+    }
+  };
+
+  WebGLApplication.prototype.Space.prototype.StaticContent.prototype.setSize = function(width, height) {
+    if (this.zplaneRenderTarget) {
+      this.zplaneRenderTarget.setSize(width, height);
+      if (this.zplane) {
+        this.zplane.material.uniforms['width'].value = width;
+        this.zplane.material.uniforms['width'].needsUpdate = true;
+        this.zplane.material.uniforms['height'].value = height;
+        this.zplane.material.uniforms['height'].needsUpdate = true;
       }
     }
   };
@@ -2915,11 +3112,12 @@
     return controls;
   };
 
-  WebGLApplication.prototype.Space.prototype.View.prototype.render = function() {
+  WebGLApplication.prototype.Space.prototype.View.prototype.render = function(beforeRender) {
     if (this.controls) {
       this.controls.update();
     }
     if (this.renderer) {
+      CATMAID.tools.callIfFn(beforeRender, this.scene, this.renderer, this.camera);
       this.renderer.clear();
       this.renderer.render(this.space.scene, this.camera);
     }
@@ -3702,13 +3900,23 @@
       }
     });
 
-    // Prepare Z plane for picking, if visible
-    var zplane = this.staticContent.zplane;
-    if (o.show_zplane && zplane) {
-      color++;
-      idMap[color] = 'zplane';
-      originalMaterials.set(zplane, zplane.material);
-      zplane.material = new THREE.MeshBasicMaterial({color: color});
+    // Prepare first Z plane for picking (the z plane for the primary stack), if
+    // visible.
+    var zplanes = this.staticContent.zplanes;
+    var primaryZplane = null;
+    if (o.show_zplane && zplanes) {
+      for (var i=0; i<zplanes.length; ++i) {
+        var zplane = zplanes[i];
+        if (i === 0) {
+          color++;
+          idMap[color] = 'zplane';
+          originalMaterials.set(zplane, zplane.material);
+          zplane.material = new THREE.MeshBasicMaterial({color: color});
+          primaryZplane = zplane;
+        } else {
+          zplane.visible = false;
+        }
+      }
     }
 
     // Render scene to picking texture
@@ -3922,9 +4130,16 @@
       }
     });
 
-    // Reset Z plane material
-    if (o.show_zplane && zplane) {
-      zplane.material = originalMaterials.get(zplane);
+    // Reset Z plane material and visibility
+    if (o.show_zplane && zplanes) {
+      for (var i=0; i<zplanes.length; ++i) {
+        var zplane = zplanes[0];
+        if (i === 0) {
+          zplane.material = originalMaterials.get(zplane);
+        } else {
+          zplane.visible = true;
+        }
+      }
     }
 
     // Reset lighting, assuming no change in position
@@ -3959,7 +4174,7 @@
     } else {
       if ('zplane' === id) {
         // Intersect ray with z plane to get location
-        var intersection = this.getIntersectionWithRay(xs, ys, x, camera, [zplane]);
+        var intersection = this.getIntersectionWithRay(xs, ys, x, camera, [primaryZplane]);
         if (intersection) {
           return {
             type: 'location',
