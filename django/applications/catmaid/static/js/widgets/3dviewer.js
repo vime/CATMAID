@@ -2707,6 +2707,7 @@
   // To get arround potential CORS restrictions load tile into image and
   // then into texture.
   var loadTile = function() {
+    this.__material.visible = true;
     this.__material.map.needsUpdate = true;
     this.__material.needsUpdate = true;
     this.__notify();
@@ -2764,10 +2765,14 @@
       }
     };
     var handleError = function(error) {
+      this.__material.visible = false;
+      this.__material.map.needsUpdate = false;
+      this.__material.needsUpdate = true;
       self.zplaneTileCounter--;
       self.zplaneTileLoadErrors.push(error);
-      if (self.zplaneTileLoadErrors === 0) {
-        CATMAID.warn('Couldn\'t load ' + loadErrors.length + ' tile(s)');
+      if (self.zplaneTileCounter === 0) {
+        //CATMAID.warn('Couldn\'t load ' + loadErrors.length + ' tile(s)');
+        space.render();
       }
     };
 
