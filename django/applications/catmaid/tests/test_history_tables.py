@@ -87,6 +87,7 @@ class HistoryTableTests(TransactionTestCase):
         'treenode',
         'treenode_class_instance',
         'treenode_connector',
+        'volume_class_instance',
 
         # Non-CATMAID tables
         'auth_group',
@@ -164,6 +165,7 @@ class HistoryTableTests(TransactionTestCase):
         'treenode__history',
         'treenode_class_instance__history',
         'treenode_connector__history',
+        'volume_class_instance__history',
 
         # History tables of versioned non-CATMAID tables
         'auth_group__history',
